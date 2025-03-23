@@ -21,9 +21,34 @@ public class MessageBus(string bootstrapServer) : IMessageBus
         await Task.CompletedTask;
     }
 
-    public Task ConsumerAsync<T>(string topic, Func<T, Task> onMessage, CancellationToken cancellationToken) where T : IEvent
+    public async Task ConsumerAsync<T>(string topic, Func<T, Task> onMessage, CancellationToken cancellationToken) where T : IEvent
     {
-        throw new NotImplementedException();
+        _ = Task.Factory.StartNew(async () =>
+        {
+            ConsumerConfig consumerConfiguration = new()
+            {
+                GroupId = "app-group",
+                BootstrapServers = bootstrapServer,
+                EnableAutoCommit = false,
+                EnablePartitionEof = true
+            };
+
+            using var consumer = new ConsumerBuilder<string, T>(consumerConfiguration).Build();
+            consumer.Subscribe(topic);
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var result = consumer.Consume();
+                if (result.IsPartitionEOF)
+                    continue;
+
+                await onMessage(result.Message.Value);
+
+                consumer.Commit();
+            }
+        }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        await Task.CompletedTask;
     }
 
     public void Dispose()
