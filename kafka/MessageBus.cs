@@ -1,28 +1,35 @@
 ﻿using Confluent.Kafka;
 using kafka.IntegrationEvents;
 using kafka.Interfaces;
+using System.Text.Json;
 
 namespace kafka;
 
 public class MessageBus(string bootstrapServer) : IMessageBus
 {
-    public async Task ProducerAsync<T>(string topic, T Message, CancellationToken cancellationToken = default) where T : IEvent
+    public async Task ProducerAsync<T>(string topic, T message, CancellationToken cancellationToken = default) where T : IEvent
     {
         ProducerConfig producerConfiguration = new() { BootstrapServers = bootstrapServer };
 
-        var producer = new ProducerBuilder<string, T>(producerConfiguration).Build();
+        var payload = System.Text.Json.JsonSerializer.Serialize(message);
 
-        _ = await producer.ProduceAsync(topic, new Message<string, T>
+        //var producer = new ProducerBuilder<string, T>(producerConfiguration)
+        //    .SetValueSerializer(new KafkaSerializer<T>())
+        //    .Build();
+
+        var producer = new ProducerBuilder<string, string>(producerConfiguration).Build();
+
+        _ = await producer.ProduceAsync(topic, new Message<string, string>
         {
             Key = Guid.NewGuid().ToString(),
-            Value = Message
+            Value = payload
         }, cancellationToken);
 
         await Task.CompletedTask;
     }
 
     public async Task ConsumerAsync<T>(string topic, Func<T, Task> onMessage, CancellationToken cancellationToken) where T : IEvent
-    {
+    {       
         _ = Task.Factory.StartNew(async () =>
         {
             ConsumerConfig consumerConfiguration = new()
@@ -33,18 +40,30 @@ public class MessageBus(string bootstrapServer) : IMessageBus
                 EnablePartitionEof = true
             };
 
-            using var consumer = new ConsumerBuilder<string, T>(consumerConfiguration).Build();
+            //using var consumer = new ConsumerBuilder<string, T>(consumerConfiguration).Build();
+            using var consumer = new ConsumerBuilder<string, string>(consumerConfiguration).Build();
             consumer.Subscribe(topic);
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                var result = consumer.Consume();
-                if (result.IsPartitionEOF)
-                    continue;
+                try
+                {
+                    var result = consumer.Consume();
+                    if (result.IsPartitionEOF)
+                        continue;
 
-                await onMessage(result.Message.Value);
+                    var message = JsonSerializer.Deserialize<T>(result.Message.Value);
+                    await onMessage(message!);
 
-                consumer.Commit();
+                    consumer.Commit();
+                }
+                catch (Exception ex)
+                {
+                    var teste = ex.Message;
+                    throw;
+                }
+                
+                
             }
         }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
