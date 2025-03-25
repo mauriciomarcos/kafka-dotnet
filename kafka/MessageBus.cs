@@ -1,7 +1,7 @@
 ﻿using Confluent.Kafka;
 using kafka.IntegrationEvents;
 using kafka.Interfaces;
-using System.Text.Json;
+using kafka.Serializations;
 
 namespace kafka;
 
@@ -11,25 +11,24 @@ public class MessageBus(string bootstrapServer) : IMessageBus
     {
         ProducerConfig producerConfiguration = new() { BootstrapServers = bootstrapServer };
 
-        var payload = System.Text.Json.JsonSerializer.Serialize(message);
+        //var payload = System.Text.Json.JsonSerializer.Serialize(message);
+        //var producer = new ProducerBuilder<string, string>(producerConfiguration).Build();
 
-        //var producer = new ProducerBuilder<string, T>(producerConfiguration)
-        //    .SetValueSerializer(new KafkaSerializer<T>())
-        //    .Build();
+        var producer = new ProducerBuilder<string, T>(producerConfiguration)
+            .SetValueSerializer(new KafkaSerializer<T>())
+            .Build();
 
-        var producer = new ProducerBuilder<string, string>(producerConfiguration).Build();
-
-        _ = await producer.ProduceAsync(topic, new Message<string, string>
+        _ = await producer.ProduceAsync(topic, new Message<string, T>
         {
             Key = Guid.NewGuid().ToString(),
-            Value = payload
+            Value = message
         }, cancellationToken);
 
         await Task.CompletedTask;
     }
 
     public async Task ConsumerAsync<T>(string topic, Func<T, Task> onMessage, CancellationToken cancellationToken) where T : IEvent
-    {       
+    {
         _ = Task.Factory.StartNew(async () =>
         {
             ConsumerConfig consumerConfiguration = new()
@@ -40,30 +39,23 @@ public class MessageBus(string bootstrapServer) : IMessageBus
                 EnablePartitionEof = true
             };
 
-            //using var consumer = new ConsumerBuilder<string, T>(consumerConfiguration).Build();
-            using var consumer = new ConsumerBuilder<string, string>(consumerConfiguration).Build();
+            //using var consumer = new ConsumerBuilder<string, string>(consumerConfiguration).Build();
+            using var consumer = new ConsumerBuilder<string, T>(consumerConfiguration)
+                .SetValueDeserializer(new KafkaDesserializer<T>())
+                .Build();
+
             consumer.Subscribe(topic);
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                try
-                {
-                    var result = consumer.Consume();
-                    if (result.IsPartitionEOF)
-                        continue;
+                var result = consumer.Consume();
+                if (result.IsPartitionEOF)
+                    continue;
 
-                    var message = JsonSerializer.Deserialize<T>(result.Message.Value);
-                    await onMessage(message!);
+                //var message = JsonSerializer.Deserialize<T>(result.Message.Value);
+                await onMessage(result.Message.Value);
 
-                    consumer.Commit();
-                }
-                catch (Exception ex)
-                {
-                    var teste = ex.Message;
-                    throw;
-                }
-                
-                
+                consumer.Commit();
             }
         }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
